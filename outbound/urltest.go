@@ -36,8 +36,14 @@ type URLTest struct {
 	link                         string
 	interval                     time.Duration
 	tolerance                    uint16
+	fallback                     URLTestFallback
 	group                        *URLTestGroup
 	interruptExternalConnections bool
+}
+
+type URLTestFallback struct {
+	enabled  bool
+	maxDelay uint16
 }
 
 func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.URLTestOutboundOptions) (*URLTest, error) {
@@ -64,6 +70,12 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 		interval:                     time.Duration(options.Interval),
 		tolerance:                    options.Tolerance,
 		interruptExternalConnections: options.InterruptExistConnections,
+	}
+	if options.Fallback.Enabled {
+		outbound.fallback = URLTestFallback{
+			enabled:  true,
+			maxDelay: uint16(time.Duration(options.Fallback.MaxDelay).Milliseconds()),
+		}
 	}
 	if len(outbound.tags) == 0 && len(outbound.uses) == 0 && !outbound.useAllProviders {
 		return nil, E.New("missing tags and uses")
@@ -127,7 +139,7 @@ func (s *URLTest) Start() error {
 	if err != nil {
 		return err
 	}
-	s.group = NewURLTestGroup(s.ctx, s.router, s.logger, outbounds, s.link, s.interval, s.tolerance, s.interruptExternalConnections)
+	s.group = NewURLTestGroup(s.ctx, s.router, s.logger, outbounds, s.link, s.interval, s.tolerance, s.fallback, s.interruptExternalConnections)
 	return nil
 }
 
@@ -250,6 +262,8 @@ type URLTestGroup struct {
 	interruptGroup               *interrupt.Group
 	interruptExternalConnections bool
 
+	fallback URLTestFallback
+
 	sync.RWMutex
 	access sync.Mutex
 	ticker *time.Ticker
@@ -264,6 +278,7 @@ func NewURLTestGroup(
 	link string,
 	interval time.Duration,
 	tolerance uint16,
+	fallback URLTestFallback,
 	interruptExternalConnections bool,
 ) *URLTestGroup {
 	if interval == 0 {
@@ -288,6 +303,7 @@ func NewURLTestGroup(
 		interval:                     interval,
 		tolerance:                    tolerance,
 		history:                      history,
+		fallback:                     fallback,
 		close:                        make(chan struct{}),
 		pauseManager:                 pause.ManagerFromContext(ctx),
 		interruptGroup:               interrupt.NewGroup(),
@@ -323,6 +339,8 @@ func (g *URLTestGroup) Select(network string) adapter.Outbound {
 	var minDelay uint16
 	var minTime time.Time
 	minOutbound := g.outbounds[0]
+	var fallbackIgnoreOutboundDelay uint16
+	var fallbackIgnoreOutbound adapter.Outbound
 	for _, detour := range g.outbounds {
 		if !common.Contains(detour.Network(), network) {
 			continue
@@ -331,11 +349,24 @@ func (g *URLTestGroup) Select(network string) adapter.Outbound {
 		if history == nil {
 			continue
 		}
+		if g.fallback.enabled && g.fallback.maxDelay > 0 && history.Delay > g.fallback.maxDelay {
+			if fallbackIgnoreOutboundDelay == 0 || history.Delay < fallbackIgnoreOutboundDelay {
+				fallbackIgnoreOutboundDelay = history.Delay
+				fallbackIgnoreOutbound = detour
+			}
+			continue
+		}
 		if minDelay == 0 || minDelay > history.Delay+g.tolerance || minDelay > history.Delay-g.tolerance && minTime.Before(history.Time) {
 			minDelay = history.Delay
 			minTime = history.Time
 			minOutbound = detour
+			if g.fallback.enabled {
+				break
+			}
 		}
+	}
+	if minOutbound == nil && fallbackIgnoreOutbound != nil {
+		return fallbackIgnoreOutbound
 	}
 	if minOutbound == nil {
 		for _, detour := range g.outbounds {
