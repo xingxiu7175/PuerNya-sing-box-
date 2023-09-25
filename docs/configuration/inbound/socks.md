@@ -29,3 +29,5 @@ See [Listen Fields](/configuration/shared/listen) for details.
 SOCKS users.
 
 No authentication required if empty.
+
+if not empty, SOCKS4 requests will be rejected.
