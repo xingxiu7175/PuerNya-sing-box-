@@ -799,8 +799,16 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			r.logger.DebugContext(ctx, "found reserve mapped domain: ", metadata.Domain)
 		}
 	}
-	if metadata.Destination.IsFqdn() && dns.DomainStrategy(metadata.InboundOptions.DomainStrategy) != dns.DomainStrategyAsIS {
-		addresses, err := r.Lookup(adapter.WithContext(ctx, &metadata), metadata.Destination.Fqdn, dns.DomainStrategy(metadata.InboundOptions.DomainStrategy))
+	if metadata.Destination.IsFqdn() {
+		var (
+			addresses []netip.Addr
+			err       error
+		)
+		if dns.DomainStrategy(metadata.InboundOptions.DomainStrategy) != dns.DomainStrategyAsIS {
+			addresses, err = r.Lookup(adapter.WithContext(ctx, &metadata), metadata.Destination.Fqdn, dns.DomainStrategy(metadata.InboundOptions.DomainStrategy))
+		} else if metadata.InboundOptions.AlwaysResolveUDP {
+			addresses, err = r.LookupDefault(adapter.WithContext(ctx, &metadata), metadata.Destination.Fqdn)
+		}
 		if err != nil {
 			return err
 		}
