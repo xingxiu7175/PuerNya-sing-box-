@@ -65,6 +65,8 @@ type Rule interface {
 	Type() string
 	UpdateGeosite() error
 	Match(metadata *InboundContext) bool
+	SkipResolve() bool
+	UseIPRule() bool
 	Outbound() string
 	String() string
 }
