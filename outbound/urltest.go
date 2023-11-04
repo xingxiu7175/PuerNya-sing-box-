@@ -81,8 +81,6 @@ func (s *URLTest) Network() []string {
 	if s.group == nil {
 		return []string{N.NetworkTCP, N.NetworkUDP}
 	}
-	s.group.RLock()
-	defer s.group.RUnlock()
 	return s.group.Select(N.NetworkTCP).Network()
 }
 
