@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"net"
+	"reflect"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
@@ -18,7 +19,10 @@ import (
 	"github.com/sagernet/sing/protocol/socks"
 )
 
-var _ adapter.Outbound = (*Socks)(nil)
+var (
+	_ adapter.Outbound      = (*Socks)(nil)
+	_ adapter.OutboundUseIP = (*Socks)(nil)
+)
 
 type Socks struct {
 	myOutboundAdapter
@@ -49,6 +53,7 @@ func NewSocks(router adapter.Router, logger log.ContextLogger, tag string, optio
 			router:       router,
 			logger:       logger,
 			tag:          tag,
+			port:         options.ServerPort,
 			dependencies: withDialerDependency(options.DialerOptions),
 		},
 		client:  socks.NewClient(outboundDialer, options.ServerOptions.Build(), version, options.Username, options.Password),
@@ -127,4 +132,22 @@ func (h *Socks) NewPacketConnection(ctx context.Context, conn N.PacketConn, meta
 	} else {
 		return NewPacketConnection(ctx, h, conn, metadata)
 	}
+}
+
+func (h *Socks) UseIP() bool {
+	return h.resolve
+}
+
+func (h *Socks) SetRelay(detour N.Dialer) adapter.Outbound {
+	c := *h.client
+	client := c
+	r := reflect.ValueOf(client)
+	r.FieldByName("dialer").Set(reflect.ValueOf(detour))
+	outbound := Socks{
+		myOutboundAdapter: h.myOutboundAdapter,
+		client:            &client,
+		resolve:           h.resolve,
+		uotClient:         h.uotClient,
+	}
+	return &outbound
 }

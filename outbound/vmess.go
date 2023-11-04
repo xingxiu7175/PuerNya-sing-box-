@@ -21,7 +21,10 @@ import (
 	"github.com/sagernet/sing/common/ntp"
 )
 
-var _ adapter.Outbound = (*VMess)(nil)
+var (
+	_ adapter.Outbound      = (*VMess)(nil)
+	_ adapter.OutboundRelay = (*VMess)(nil)
+)
 
 type VMess struct {
 	myOutboundAdapter
@@ -47,6 +50,7 @@ func NewVMess(ctx context.Context, router adapter.Router, logger log.ContextLogg
 			router:       router,
 			logger:       logger,
 			tag:          tag,
+			port:         options.ServerPort,
 			dependencies: withDialerDependency(options.DialerOptions),
 		},
 		dialer:     outboundDialer,
@@ -208,4 +212,11 @@ func (h *vmessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr)
 	} else {
 		return h.client.DialEarlyPacketConn(conn, destination), nil
 	}
+}
+
+func (h *VMess) SetRelay(detour N.Dialer) adapter.Outbound {
+	vmess := *h
+	outbound := vmess
+	outbound.dialer = detour
+	return &outbound
 }

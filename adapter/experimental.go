@@ -39,11 +39,18 @@ type OutboundGroup interface {
 	Outbound
 	Now() string
 	All() []string
+	UpdateOutbounds(tag string) error
+	SelectedOutbound(network string) Outbound
 }
 
 type URLTestGroup interface {
 	OutboundGroup
 	URLTest(ctx context.Context, url string) (map[string]uint16, error)
+}
+
+type RelayGroup interface {
+	OutboundGroup
+	IsRelay() bool
 }
 
 func OutboundTag(detour Outbound) string {

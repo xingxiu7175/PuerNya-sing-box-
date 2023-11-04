@@ -24,6 +24,12 @@ func NewDetour(router adapter.Router, detour string) N.Dialer {
 	return &DetourDialer{router: router, detour: detour}
 }
 
+func NewDetourWithDialer(router adapter.Router, detour adapter.Outbound) N.Dialer {
+	d := DetourDialer{router: router, detour: detour.Tag()}
+	d.initOnce.Do(func() { d.dialer = detour })
+	return &d
+}
+
 func (d *DetourDialer) Start() error {
 	_, err := d.Dialer()
 	return err
@@ -32,7 +38,7 @@ func (d *DetourDialer) Start() error {
 func (d *DetourDialer) Dialer() (N.Dialer, error) {
 	d.initOnce.Do(func() {
 		var loaded bool
-		d.dialer, loaded = d.router.Outbound(d.detour)
+		d.dialer, loaded = d.router.OutboundWithProvider(d.detour)
 		if !loaded {
 			d.initErr = E.New("outbound detour not found: ", d.detour)
 		}

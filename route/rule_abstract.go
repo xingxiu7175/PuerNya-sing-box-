@@ -10,6 +10,7 @@ import (
 )
 
 type abstractDefaultRule struct {
+	tag                     string
 	items                   []RuleItem
 	sourceAddressItems      []RuleItem
 	sourcePortItems         []RuleItem
@@ -17,11 +18,21 @@ type abstractDefaultRule struct {
 	destinationPortItems    []RuleItem
 	allItems                []RuleItem
 	invert                  bool
+	skipResolve             bool
 	outbound                string
+	useIPRule               bool
 }
 
 func (r *abstractDefaultRule) Type() string {
 	return C.RuleTypeDefault
+}
+
+func (r *abstractDefaultRule) SkipResolve() bool {
+	return r.skipResolve
+}
+
+func (r *abstractDefaultRule) UseIPRule() bool {
+	return r.useIPRule
 }
 
 func (r *abstractDefaultRule) Start() error {
@@ -127,6 +138,9 @@ func (r *abstractDefaultRule) Outbound() string {
 }
 
 func (r *abstractDefaultRule) String() string {
+	if r.tag != "" {
+		return "rule[" + r.tag + "]"
+	}
 	if !r.invert {
 		return strings.Join(F.MapToString(r.allItems), " ")
 	} else {
@@ -135,14 +149,25 @@ func (r *abstractDefaultRule) String() string {
 }
 
 type abstractLogicalRule struct {
-	rules    []adapter.Rule
-	mode     string
-	invert   bool
-	outbound string
+	tag         string
+	rules       []adapter.Rule
+	mode        string
+	invert      bool
+	skipResolve bool
+	outbound    string
+	useIPRule   bool
 }
 
 func (r *abstractLogicalRule) Type() string {
 	return C.RuleTypeLogical
+}
+
+func (r *abstractLogicalRule) SkipResolve() bool {
+	return r.skipResolve
+}
+
+func (r *abstractLogicalRule) UseIPRule() bool {
+	return r.useIPRule
 }
 
 func (r *abstractLogicalRule) UpdateGeosite() error {
@@ -192,6 +217,9 @@ func (r *abstractLogicalRule) Outbound() string {
 }
 
 func (r *abstractLogicalRule) String() string {
+	if r.tag != "" {
+		return "rule[" + r.tag + "]"
+	}
 	var op string
 	switch r.mode {
 	case C.LogicalTypeAnd:

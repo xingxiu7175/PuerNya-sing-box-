@@ -11,8 +11,10 @@
   "detour": "another-in",
   "sniff": false,
   "sniff_override_destination": false,
+  "sniff_override_rules": [],
   "sniff_timeout": "300ms",
   "domain_strategy": "prefer_ipv6",
+  "always_resolve_udp": false,
   "udp_disable_domain_unmapping": false
 }
 ```
@@ -77,6 +79,12 @@ UDP NAT 过期时间，以秒为单位，默认为 300（5 分钟）。
 
 如果域名无效（如 Tor），将不生效。
 
+#### sniff_override_rules
+
+根据规则选择处需要用探测出的域名覆盖目标地址的连接。
+
+参阅 [Sniff Override Rule](/zh/configuration/shared/sniff_override_rules/)
+
 #### sniff_timeout
 
 探测超时时间。
@@ -90,6 +98,12 @@ UDP NAT 过期时间，以秒为单位，默认为 300（5 分钟）。
 如果设置，请求的域名将在路由之前解析为 IP。
 
 如果 `sniff_override_destination` 生效，它的值将作为后备。
+
+#### always_resolve_udp
+
+如果设置，当入站流量为 udp 时，请求的域名将在路由之前解析为 IP。
+
+如果未设置 `domain_strategy`，将按照 `dns.rules` 执行。
 
 #### udp_disable_domain_unmapping
 

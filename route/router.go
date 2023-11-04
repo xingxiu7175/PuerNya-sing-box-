@@ -23,7 +23,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/ntp"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing-box/outbound"
+	O "github.com/sagernet/sing-box/outbound"
 	"github.com/sagernet/sing-box/transport/fakeip"
 	"github.com/sagernet/sing-dns"
 	mux "github.com/sagernet/sing-mux"
@@ -50,15 +50,16 @@ type Router struct {
 	ctx                                context.Context
 	logger                             log.ContextLogger
 	dnsLogger                          log.ContextLogger
+	overrideLogger                     log.ContextLogger
 	inboundByTag                       map[string]adapter.Inbound
 	outbounds                          []adapter.Outbound
 	outboundByTag                      map[string]adapter.Outbound
+	outboundProviders                  []adapter.OutboundProvider
+	outboundProviderByTag              map[string]adapter.OutboundProvider
 	rules                              []adapter.Rule
 	defaultDetour                      string
 	defaultOutboundForConnection       adapter.Outbound
 	defaultOutboundForPacketConnection adapter.Outbound
-	needGeoIPDatabase                  bool
-	needGeositeDatabase                bool
 	geoIPOptions                       option.GeoIPOptions
 	geositeOptions                     option.GeositeOptions
 	geoIPReader                        *geoip.Reader
@@ -67,6 +68,7 @@ type Router struct {
 	dnsClient                          *dns.Client
 	defaultDomainStrategy              dns.DomainStrategy
 	dnsRules                           []adapter.DNSRule
+	sniffOverrideRules                 map[string][]adapter.SniffOverrideRule
 	defaultTransport                   dns.Transport
 	transports                         []dns.Transport
 	transportMap                       map[string]dns.Transport
@@ -101,11 +103,12 @@ func NewRouter(
 		ctx:                   ctx,
 		logger:                logFactory.NewLogger("router"),
 		dnsLogger:             logFactory.NewLogger("dns"),
+		overrideLogger:        logFactory.NewLogger("override"),
 		outboundByTag:         make(map[string]adapter.Outbound),
+		outboundProviderByTag: make(map[string]adapter.OutboundProvider),
 		rules:                 make([]adapter.Rule, 0, len(options.Rules)),
 		dnsRules:              make([]adapter.DNSRule, 0, len(dnsOptions.Rules)),
-		needGeoIPDatabase:     hasRule(options.Rules, isGeoIPRule) || hasDNSRule(dnsOptions.Rules, isGeoIPDNSRule),
-		needGeositeDatabase:   hasRule(options.Rules, isGeositeRule) || hasDNSRule(dnsOptions.Rules, isGeositeDNSRule),
+		sniffOverrideRules:    make(map[string][]adapter.SniffOverrideRule),
 		geoIPOptions:          common.PtrValueOrDefault(options.GeoIP),
 		geositeOptions:        common.PtrValueOrDefault(options.Geosite),
 		geositeCache:          make(map[string]adapter.Rule),
@@ -137,7 +140,6 @@ func NewRouter(
 		}
 		router.dnsRules = append(router.dnsRules, dnsRule)
 	}
-
 	transports := make([]dns.Transport, len(dnsOptions.Servers))
 	dummyTransportMap := make(map[string]dns.Transport)
 	transportMap := make(map[string]dns.Transport)
@@ -331,10 +333,14 @@ func NewRouter(
 	return router, nil
 }
 
-func (r *Router) Initialize(inbounds []adapter.Inbound, outbounds []adapter.Outbound, defaultOutbound func() adapter.Outbound) error {
+func (r *Router) Initialize(inbounds []adapter.Inbound, outboundProviders []adapter.OutboundProvider, outbounds []adapter.Outbound) error {
 	inboundByTag := make(map[string]adapter.Inbound)
 	for _, inbound := range inbounds {
 		inboundByTag[inbound.Tag()] = inbound
+	}
+	outboundProviderByTag := make(map[string]adapter.OutboundProvider)
+	for _, provider := range outboundProviders {
+		outboundProviderByTag[provider.Tag()] = provider
 	}
 	outboundByTag := make(map[string]adapter.Outbound)
 	for _, detour := range outbounds {
@@ -357,6 +363,9 @@ func (r *Router) Initialize(inbounds []adapter.Inbound, outbounds []adapter.Outb
 	var index, packetIndex int
 	if defaultOutboundForConnection == nil {
 		for i, detour := range outbounds {
+			if detour.Tag() == "OUTBOUNDLESS" {
+				continue
+			}
 			if common.Contains(detour.Network(), N.NetworkTCP) {
 				index = i
 				defaultOutboundForConnection = detour
@@ -366,6 +375,9 @@ func (r *Router) Initialize(inbounds []adapter.Inbound, outbounds []adapter.Outb
 	}
 	if defaultOutboundForPacketConnection == nil {
 		for i, detour := range outbounds {
+			if detour.Tag() == "OUTBOUNDLESS" {
+				continue
+			}
 			if common.Contains(detour.Network(), N.NetworkUDP) {
 				packetIndex = i
 				defaultOutboundForPacketConnection = detour
@@ -374,7 +386,7 @@ func (r *Router) Initialize(inbounds []adapter.Inbound, outbounds []adapter.Outb
 		}
 	}
 	if defaultOutboundForConnection == nil || defaultOutboundForPacketConnection == nil {
-		detour := defaultOutbound()
+		detour := r.outboundByTag["OUTBOUNDLESS"]
 		if defaultOutboundForConnection == nil {
 			defaultOutboundForConnection = detour
 		}
@@ -405,6 +417,8 @@ func (r *Router) Initialize(inbounds []adapter.Inbound, outbounds []adapter.Outb
 	r.defaultOutboundForConnection = defaultOutboundForConnection
 	r.defaultOutboundForPacketConnection = defaultOutboundForPacketConnection
 	r.outboundByTag = outboundByTag
+	r.outboundProviderByTag = outboundProviderByTag
+	r.outboundProviders = outboundProviders
 	for i, rule := range r.rules {
 		if _, loaded := outboundByTag[rule.Outbound()]; !loaded {
 			return E.New("outbound not found for rule[", i, "]: ", rule.Outbound())
@@ -417,18 +431,23 @@ func (r *Router) Outbounds() []adapter.Outbound {
 	return r.outbounds
 }
 
+func (r *Router) OutboundProviders() []adapter.OutboundProvider {
+	return r.outboundProviders
+}
+
+func (r *Router) OutboundProvider(tag string) (adapter.OutboundProvider, bool) {
+	provider, loaded := r.outboundProviderByTag[tag]
+	return provider, loaded
+}
+
 func (r *Router) Start() error {
-	if r.needGeoIPDatabase {
-		err := r.prepareGeoIPDatabase()
-		if err != nil {
-			return err
-		}
+	err := r.prepareGeoIPDatabase()
+	if err != nil {
+		return err
 	}
-	if r.needGeositeDatabase {
-		err := r.prepareGeositeDatabase()
-		if err != nil {
-			return err
-		}
+	err = r.prepareGeositeDatabase()
+	if err != nil {
+		return err
 	}
 	if r.interfaceMonitor != nil {
 		err := r.interfaceMonitor.Start()
@@ -448,25 +467,17 @@ func (r *Router) Start() error {
 			return err
 		}
 	}
-	if r.needGeositeDatabase {
-		for _, rule := range r.rules {
-			err := rule.UpdateGeosite()
-			if err != nil {
-				r.logger.Error("failed to initialize geosite: ", err)
-			}
-		}
-		for _, rule := range r.dnsRules {
-			err := rule.UpdateGeosite()
-			if err != nil {
-				r.logger.Error("failed to initialize geosite: ", err)
-			}
-		}
-		err := common.Close(r.geositeReader)
+	for _, rule := range r.rules {
+		err := rule.UpdateGeosite()
 		if err != nil {
-			return err
+			r.logger.Error("failed to initialize geosite: ", err)
 		}
-		r.geositeCache = nil
-		r.geositeReader = nil
+	}
+	for _, rule := range r.dnsRules {
+		err := rule.UpdateGeosite()
+		if err != nil {
+			r.logger.Error("failed to initialize geosite: ", err)
+		}
 	}
 	for i, rule := range r.rules {
 		err := rule.Start()
@@ -498,6 +509,7 @@ func (r *Router) Start() error {
 			return E.Cause(err, "initialize time service")
 		}
 	}
+	r.geositeCache = nil
 	return nil
 }
 
@@ -525,6 +537,12 @@ func (r *Router) Close() error {
 		r.logger.Trace("closing geoip reader")
 		err = E.Append(err, common.Close(r.geoIPReader), func(err error) error {
 			return E.Cause(err, "close geoip reader")
+		})
+	}
+	if r.geositeReader != nil {
+		r.logger.Trace("closing geosite reader")
+		err = E.Append(err, common.Close(r.geositeReader), func(err error) error {
+			return E.Cause(err, "close geosite reader")
 		})
 	}
 	if r.interfaceMonitor != nil {
@@ -563,6 +581,30 @@ func (r *Router) Close() error {
 func (r *Router) Outbound(tag string) (adapter.Outbound, bool) {
 	outbound, loaded := r.outboundByTag[tag]
 	return outbound, loaded
+}
+
+func (r *Router) OutboundWithProvider(tag string) (adapter.Outbound, bool) {
+	outbound, loaded := r.outboundByTag[tag]
+	if loaded {
+		return outbound, loaded
+	}
+	for _, provider := range r.outboundProviders {
+		outbound, loaded = provider.Outbound(tag)
+		if loaded {
+			return outbound, loaded
+		}
+	}
+	return nil, false
+}
+
+func (r *Router) OutboundsWithProvider() []adapter.Outbound {
+	outbounds := []adapter.Outbound{}
+	outbounds = append(outbounds, r.outbounds...)
+	for _, provider := range r.outboundProviders {
+		myOutbounds := provider.Outbounds()
+		outbounds = append(outbounds, myOutbounds...)
+	}
+	return outbounds
 }
 
 func (r *Router) DefaultOutbound(network string) adapter.Outbound {
@@ -633,21 +675,30 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 		conn = deadline.NewConn(conn)
 	}
 
+	if metadata.Domain == "" && metadata.Destination.IsFqdn() {
+		metadata.Domain = metadata.Destination.Fqdn
+	}
+
 	if metadata.InboundOptions.SniffEnabled {
 		buffer := buf.NewPacket()
 		buffer.FullReset()
-		sniffMetadata, err := sniff.PeekStream(ctx, conn, buffer, time.Duration(metadata.InboundOptions.SniffTimeout), sniff.StreamDomainNameQuery, sniff.TLSClientHello, sniff.HTTPHost)
+		sniffMetadata, err := sniff.PeekStream(ctx, conn, buffer, time.Duration(metadata.InboundOptions.SniffTimeout), sniff.StreamDomainNameQuery, sniff.TLSClientHello, sniff.HTTPHost, sniff.BittorrentTCPMessage)
 		if sniffMetadata != nil {
 			metadata.Protocol = sniffMetadata.Protocol
-			metadata.Domain = sniffMetadata.Domain
-			if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
-				metadata.Destination = M.Socksaddr{
-					Fqdn: metadata.Domain,
-					Port: metadata.Destination.Port,
+			if metadata.Domain == "" {
+				metadata.Domain = sniffMetadata.Domain
+				if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
+					overrideFlag := r.matchSniffOverride(ctx, &metadata)
+					if overrideFlag {
+						metadata.Destination = M.Socksaddr{
+							Fqdn: metadata.Domain,
+							Port: metadata.Destination.Port,
+						}
+					}
 				}
 			}
-			if metadata.Domain != "" {
-				r.logger.DebugContext(ctx, "sniffed protocol: ", metadata.Protocol, ", domain: ", metadata.Domain)
+			if sniffMetadata.Domain != "" {
+				r.logger.DebugContext(ctx, "sniffed protocol: ", metadata.Protocol, ", domain: ", sniffMetadata.Domain)
 			} else {
 				r.logger.DebugContext(ctx, "sniffed protocol: ", metadata.Protocol)
 			}
@@ -749,6 +800,10 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 		conn = deadline.NewPacketConn(bufio.NewNetPacketConn(conn))
 	}*/
 
+	if metadata.Domain == "" && metadata.Destination.IsFqdn() {
+		metadata.Domain = metadata.Destination.Fqdn
+	}
+
 	if metadata.InboundOptions.SniffEnabled || metadata.Destination.Addr.IsUnspecified() {
 		buffer := buf.NewPacket()
 		buffer.FullReset()
@@ -761,18 +816,23 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			metadata.Destination = destination
 		}
 		if metadata.InboundOptions.SniffEnabled {
-			sniffMetadata, _ := sniff.PeekPacket(ctx, buffer.Bytes(), sniff.DomainNameQuery, sniff.QUICClientHello, sniff.STUNMessage)
+			sniffMetadata, _ := sniff.PeekPacket(ctx, buffer.Bytes(), sniff.DomainNameQuery, sniff.QUICClientHello, sniff.STUNMessage, sniff.BittorrentUDPMessage)
 			if sniffMetadata != nil {
 				metadata.Protocol = sniffMetadata.Protocol
-				metadata.Domain = sniffMetadata.Domain
-				if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
-					metadata.Destination = M.Socksaddr{
-						Fqdn: metadata.Domain,
-						Port: metadata.Destination.Port,
+				if metadata.Domain == "" {
+					metadata.Domain = sniffMetadata.Domain
+					if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
+						overrideFlag := r.matchSniffOverride(ctx, &metadata)
+						if overrideFlag {
+							metadata.Destination = M.Socksaddr{
+								Fqdn: metadata.Domain,
+								Port: metadata.Destination.Port,
+							}
+						}
 					}
 				}
-				if metadata.Domain != "" {
-					r.logger.DebugContext(ctx, "sniffed packet protocol: ", metadata.Protocol, ", domain: ", metadata.Domain)
+				if sniffMetadata.Domain != "" {
+					r.logger.DebugContext(ctx, "sniffed packet protocol: ", metadata.Protocol, ", domain: ", sniffMetadata.Domain)
 				} else {
 					r.logger.DebugContext(ctx, "sniffed packet protocol: ", metadata.Protocol)
 				}
@@ -787,8 +847,16 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			r.logger.DebugContext(ctx, "found reserve mapped domain: ", metadata.Domain)
 		}
 	}
-	if metadata.Destination.IsFqdn() && dns.DomainStrategy(metadata.InboundOptions.DomainStrategy) != dns.DomainStrategyAsIS {
-		addresses, err := r.Lookup(adapter.WithContext(ctx, &metadata), metadata.Destination.Fqdn, dns.DomainStrategy(metadata.InboundOptions.DomainStrategy))
+	if metadata.Destination.IsFqdn() {
+		var (
+			addresses []netip.Addr
+			err       error
+		)
+		if dns.DomainStrategy(metadata.InboundOptions.DomainStrategy) != dns.DomainStrategyAsIS {
+			addresses, err = r.Lookup(adapter.WithContext(ctx, &metadata), metadata.Destination.Fqdn, dns.DomainStrategy(metadata.InboundOptions.DomainStrategy))
+		} else if metadata.InboundOptions.AlwaysResolveUDP {
+			addresses, err = r.LookupDefault(adapter.WithContext(ctx, &metadata), metadata.Destination.Fqdn)
+		}
 		if err != nil {
 			return err
 		}
@@ -825,12 +893,12 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 
 func (r *Router) match(ctx context.Context, metadata *adapter.InboundContext, defaultOutbound adapter.Outbound) (context.Context, adapter.Rule, adapter.Outbound, error) {
 	matchRule, matchOutbound := r.match0(ctx, metadata, defaultOutbound)
-	if contextOutbound, loaded := outbound.TagFromContext(ctx); loaded {
+	if contextOutbound, loaded := O.TagFromContext(ctx); loaded {
 		if contextOutbound == matchOutbound.Tag() {
 			return nil, nil, nil, E.New("connection loopback in outbound/", matchOutbound.Type(), "[", matchOutbound.Tag(), "]")
 		}
 	}
-	ctx = outbound.ContextWithTag(ctx, matchOutbound.Tag())
+	ctx = O.ContextWithTag(ctx, matchOutbound.Tag())
 	return ctx, matchRule, matchOutbound, nil
 }
 
@@ -866,17 +934,45 @@ func (r *Router) match0(ctx context.Context, metadata *adapter.InboundContext, d
 			metadata.ProcessInfo = processInfo
 		}
 	}
+	resolveStatus := -1
+	if metadata.Destination.IsFqdn() && len(metadata.DestinationAddresses) == 0 {
+		resolveStatus = 0
+	}
 	for i, rule := range r.rules {
+		if !rule.SkipResolve() && resolveStatus == 0 && rule.UseIPRule() {
+			addresses, err := r.LookupDefault(adapter.WithContext(ctx, metadata), metadata.Destination.Fqdn)
+			resolveStatus = 2
+			if err == nil {
+				resolveStatus = 1
+				metadata.DestinationAddresses = addresses
+			}
+		}
 		if rule.Match(metadata) {
 			detour := rule.Outbound()
 			r.logger.DebugContext(ctx, "match[", i, "] ", rule.String(), " => ", detour)
 			if outbound, loaded := r.Outbound(detour); loaded {
+				if resolveStatus == 1 && !r.MustUseIP(outbound, metadata.Network) {
+					metadata.DestinationAddresses = []netip.Addr{}
+				}
 				return rule, outbound
 			}
 			r.logger.ErrorContext(ctx, "outbound not found: ", detour)
 		}
 	}
+	if resolveStatus == 1 && !r.MustUseIP(defaultOutbound, metadata.Network) {
+		metadata.DestinationAddresses = []netip.Addr{}
+	}
 	return nil, defaultOutbound
+}
+
+func (r *Router) MustUseIP(outbound adapter.Outbound, network string) bool {
+	tag := O.RealOutboundTag(outbound, network)
+	detour, _ := r.Outbound(tag)
+	d, ok := detour.(adapter.OutboundUseIP)
+	if !ok {
+		return false
+	}
+	return d.UseIP()
 }
 
 func (r *Router) InterfaceFinder() control.InterfaceFinder {
@@ -1018,4 +1114,8 @@ func (r *Router) ResetNetwork() error {
 		transport.Reset()
 	}
 	return nil
+}
+
+func (r *Router) DefaultOutboundForConnection() adapter.Outbound {
+	return r.defaultOutboundForConnection
 }

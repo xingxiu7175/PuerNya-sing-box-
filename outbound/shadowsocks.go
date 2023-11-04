@@ -20,7 +20,10 @@ import (
 	"github.com/sagernet/sing/common/uot"
 )
 
-var _ adapter.Outbound = (*Shadowsocks)(nil)
+var (
+	_ adapter.Outbound      = (*Shadowsocks)(nil)
+	_ adapter.OutboundRelay = (*Shadowsocks)(nil)
+)
 
 type Shadowsocks struct {
 	myOutboundAdapter
@@ -50,6 +53,7 @@ func NewShadowsocks(ctx context.Context, router adapter.Router, logger log.Conte
 			router:       router,
 			logger:       logger,
 			tag:          tag,
+			port:         options.ServerPort,
 			dependencies: withDialerDependency(options.DialerOptions),
 		},
 		dialer:     outboundDialer,
@@ -185,4 +189,11 @@ func (h *shadowsocksDialer) ListenPacket(ctx context.Context, destination M.Sock
 		return nil, err
 	}
 	return h.method.DialPacketConn(outConn), nil
+}
+
+func (s *Shadowsocks) SetRelay(detour N.Dialer) adapter.Outbound {
+	ss := *s
+	outbound := ss
+	outbound.dialer = detour
+	return &outbound
 }

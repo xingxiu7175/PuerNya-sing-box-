@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"reflect"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
@@ -23,8 +24,9 @@ import (
 )
 
 var (
-	_ adapter.Outbound                = (*TUIC)(nil)
-	_ adapter.InterfaceUpdateListener = (*TUIC)(nil)
+	_ adapter.Outbound                = (*Hysteria2)(nil)
+	_ adapter.OutboundRelay           = (*Hysteria2)(nil)
+	_ adapter.InterfaceUpdateListener = (*Hysteria2)(nil)
 )
 
 type Hysteria2 struct {
@@ -81,6 +83,7 @@ func NewHysteria2(ctx context.Context, router adapter.Router, logger log.Context
 			router:       router,
 			logger:       logger,
 			tag:          tag,
+			port:         options.ServerPort,
 			dependencies: withDialerDependency(options.DialerOptions),
 		},
 		client: client,
@@ -116,10 +119,22 @@ func (h *Hysteria2) NewPacketConnection(ctx context.Context, conn N.PacketConn, 
 	return NewPacketConnection(ctx, h, conn, metadata)
 }
 
-func (h *Hysteria2) InterfaceUpdated() error {
-	return h.client.CloseWithError(E.New("network changed"))
+func (h *Hysteria2) InterfaceUpdated() {
+	h.client.CloseWithError(E.New("network changed"))
 }
 
 func (h *Hysteria2) Close() error {
 	return h.client.CloseWithError(os.ErrClosed)
+}
+
+func (h *Hysteria2) SetRelay(detour N.Dialer) adapter.Outbound {
+	c := *h.client
+	client := c
+	r := reflect.ValueOf(client)
+	r.FieldByName("dialer").Set(reflect.ValueOf(detour))
+	outbound := Hysteria2{
+		myOutboundAdapter: h.myOutboundAdapter,
+		client:            &client,
+	}
+	return &outbound
 }

@@ -5,6 +5,7 @@
   "route": {
     "rules": [
       {
+        "tag": "rule-a",
         "inbound": [
           "mixed-in"
         ],
@@ -82,6 +83,7 @@
         ],
         "clash_mode": "direct",
         "invert": false,
+        "skip_resolve": false,
         "outbound": "direct"
       },
       {
@@ -89,6 +91,7 @@
         "mode": "and",
         "rules": [],
         "invert": false,
+        "skip_resolve": false,
         "outbound": "direct"
       }
     ]
@@ -111,6 +114,10 @@
     (`source_geoip` || `source_ip_cidr`) &&  
     (`source_port` || `source_port_range`) &&  
     `other fields`
+
+#### tag
+
+规则标签，如果被设置则会替换输出中的项目详情。
 
 #### inbound
 
@@ -229,6 +236,10 @@
 #### invert
 
 反选匹配结果。
+
+#### skip_resolve
+
+跳过域名解析。
 
 #### outbound
 

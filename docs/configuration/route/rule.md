@@ -5,6 +5,7 @@
   "route": {
     "rules": [
       {
+        "tag": "rule-a",
         "inbound": [
           "mixed-in"
         ],
@@ -84,6 +85,7 @@
         ],
         "clash_mode": "direct",
         "invert": false,
+        "skip_resolve": false,
         "outbound": "direct"
       },
       {
@@ -91,6 +93,7 @@
         "mode": "and",
         "rules": [],
         "invert": false,
+        "skip_resolve": false,
         "outbound": "direct"
       }
     ]
@@ -113,6 +116,10 @@
     (`source_geoip` || `source_ip_cidr`) &&  
     (`source_port` || `source_port_range`) &&  
     `other fields`
+
+#### tag
+
+Tag of rule, will take instead of item string when not empty.
 
 #### inbound
 
@@ -231,6 +238,10 @@ Match Clash mode.
 #### invert
 
 Invert match result.
+
+#### skip_resolve
+
+Skip resolving domain.
 
 #### outbound
 

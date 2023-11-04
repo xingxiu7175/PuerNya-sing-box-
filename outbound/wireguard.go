@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -27,6 +28,7 @@ import (
 
 var (
 	_ adapter.Outbound                = (*WireGuard)(nil)
+	_ adapter.OutboundUseIP           = (*WireGuard)(nil)
 	_ adapter.InterfaceUpdateListener = (*WireGuard)(nil)
 )
 
@@ -45,6 +47,7 @@ func NewWireGuard(ctx context.Context, router adapter.Router, logger log.Context
 			router:       router,
 			logger:       logger,
 			tag:          tag,
+			port:         options.ServerPort,
 			dependencies: withDialerDependency(options.DialerOptions),
 		},
 	}
@@ -244,4 +247,22 @@ func (w *WireGuard) Close() error {
 	}
 	w.tunDevice.Close()
 	return nil
+}
+
+func (w *WireGuard) UseIP() bool {
+	return true
+}
+
+func (w *WireGuard) SetRelay(detour N.Dialer) adapter.Outbound {
+	c := *w.bind
+	client := c
+	r := reflect.ValueOf(client)
+	r.FieldByName("dialer").Set(reflect.ValueOf(detour))
+	outbound := WireGuard{
+		myOutboundAdapter: w.myOutboundAdapter,
+		bind:              &client,
+		device:            w.device,
+		tunDevice:         w.tunDevice,
+	}
+	return &outbound
 }
