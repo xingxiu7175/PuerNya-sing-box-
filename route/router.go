@@ -625,7 +625,6 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 			Fqdn: domain,
 			Port: metadata.Destination.Port,
 		}
-		metadata.FakeIP = true
 		r.logger.DebugContext(ctx, "found fakeip domain: ", domain)
 	}
 
@@ -703,6 +702,7 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 }
 
 func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext) error {
+	var rewriteDestination bool
 	if metadata.InboundDetour != "" {
 		if metadata.LastInbound == metadata.InboundDetour {
 			return E.New("routing loop on detour: ", metadata.InboundDetour)
@@ -740,7 +740,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			Fqdn: domain,
 			Port: metadata.Destination.Port,
 		}
-		metadata.FakeIP = true
+		rewriteDestination = true
 		r.logger.DebugContext(ctx, "found fakeip domain: ", domain)
 	}
 
@@ -766,6 +766,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 				metadata.Protocol = sniffMetadata.Protocol
 				metadata.Domain = sniffMetadata.Domain
 				if metadata.InboundOptions.SniffOverrideDestination && M.IsDomainName(metadata.Domain) {
+					rewriteDestination = true
 					metadata.Destination = M.Socksaddr{
 						Fqdn: metadata.Domain,
 						Port: metadata.Destination.Port,
@@ -817,7 +818,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			conn = statsService.RoutedPacketConnection(metadata.Inbound, detour.Tag(), metadata.User, conn)
 		}
 	}
-	if metadata.FakeIP {
+	if rewriteDestination {
 		conn = bufio.NewNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)
 	}
 	return detour.NewPacketConnection(ctx, conn, metadata)
