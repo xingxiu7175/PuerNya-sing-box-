@@ -345,7 +345,7 @@ func newVMessNativeParser(content string) (option.Outbound, error) {
 			case "tcp":
 				if tType, exists := proxy["type"]; exists {
 					if tType == "http" {
-						options.Transport.Type = C.V2RayTransportTypeHTTP
+						Transport.Type = C.V2RayTransportTypeHTTP
 						if method, exists := proxy["method"]; exists {
 							Transport.HTTPOptions.Method = method
 						}
