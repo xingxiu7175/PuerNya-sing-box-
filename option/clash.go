@@ -38,6 +38,12 @@ type URLTestOutboundOptions struct {
 	Interval                  Duration `json:"interval,omitempty"`
 	Tolerance                 uint16   `json:"tolerance,omitempty"`
 	InterruptExistConnections bool     `json:"interrupt_exist_connections,omitempty"`
+	Fallback                  URLTestFallbackOptions `json:"fallback,omitempty"`
+}
+
+type URLTestFallbackOptions struct {
+	Enabled  bool     `json:"enabled,omitempty"`
+	MaxDelay Duration `json:"max_delay,omitempty"`
 }
 
 type RelayOutboundOptions struct {
