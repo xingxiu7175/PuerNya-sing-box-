@@ -223,3 +223,10 @@ func (w *WireGuard) NewPacketConnection(ctx context.Context, conn N.PacketConn, 
 func (w *WireGuard) UseIP() bool {
 	return true
 }
+
+func (w *WireGuard) SetRelay(detour N.Dialer) adapter.Outbound {
+	wg := *w
+	outbound := wg
+	outbound.listener = detour
+	return &outbound
+}
