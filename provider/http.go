@@ -193,7 +193,7 @@ func (p *HTTPProvider) fetchOnce(ctx context.Context, router adapter.Router) err
 			content = decodeBase64Safe(others)
 		}
 		infoStr := fmt.Sprint("# upload=", info.upload, "; download=", info.download, "; total=", info.total, "; expire=", info.expire, ";")
-		content = infoStr + "\n" + content
+		content = infoStr + "\n" + removeEmptyLines(content)
 		os.WriteFile(p.path, []byte(content), 0o666)
 
 		return nil
@@ -242,7 +242,7 @@ func (p *HTTPProvider) fetchOnce(ctx context.Context, router adapter.Router) err
 	p.logger.Info("update outbound provider ", p.tag, " success")
 
 	if subInfo != "" {
-		content = subInfo + "\n" + content
+		content = subInfo + "\n" + removeEmptyLines(content)
 	}
 	os.WriteFile(p.path, []byte(content), 0o666)
 
