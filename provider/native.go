@@ -13,6 +13,11 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
+func removeEmptyLines(text string) string {
+	pattern := regexp.MustCompile(`(?:\n\s*\r?\n)+`)
+	return pattern.ReplaceAllString(text, "\n")
+}
+
 func newNativeURIParser(content string) ([]option.Outbound, error) {
 	outbounds := []option.Outbound{}
 	reg := regexp.MustCompile(`^(.+?)://(.+?)$`)
