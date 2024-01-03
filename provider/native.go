@@ -27,6 +27,10 @@ func newNativeURIParser(content string) ([]option.Outbound, error) {
 		)
 		protocol := strings.ToLower(trimBlank(parsedArr[1]))
 		parsedProxy := trimBlank(decodeBase64Safe(trimBlank(parsedArr[2])))
+		if json.Valid([]byte(parsedProxy)) {
+			re := regexp.MustCompile(`(\"\b\w+\b\"):([^,\}\"]+)`)
+			parsedProxy = re.ReplaceAllString(parsedProxy, `$1:"$2"`)
+		}
 		switch protocol {
 		case "ss":
 			outbound, err = newSSNativeParser(parsedProxy)
