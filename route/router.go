@@ -57,6 +57,7 @@ type Router struct {
 	outbounds                          []adapter.Outbound
 	outboundByTag                      map[string]adapter.Outbound
 	rules                              []adapter.Rule
+	routeRuleByUUID                    map[string]adapter.Rule
 	defaultDetour                      string
 	defaultOutboundForConnection       adapter.Outbound
 	defaultOutboundForPacketConnection adapter.Outbound
@@ -72,6 +73,7 @@ type Router struct {
 	dnsIndependentCache                bool
 	defaultDomainStrategy              dns.DomainStrategy
 	dnsRules                           []adapter.DNSRule
+	dnsRuleByUUID                      map[string]adapter.DNSRule
 	ruleSets                           []adapter.RuleSet
 	ruleSetMap                         map[string]adapter.RuleSet
 	defaultTransport                   dns.Transport
@@ -115,7 +117,9 @@ func NewRouter(
 		dnsLogger:             logFactory.NewLogger("dns"),
 		outboundByTag:         make(map[string]adapter.Outbound),
 		rules:                 make([]adapter.Rule, 0, len(options.Rules)),
+		routeRuleByUUID:       make(map[string]adapter.Rule),
 		dnsRules:              make([]adapter.DNSRule, 0, len(dnsOptions.Rules)),
+		dnsRuleByUUID:         make(map[string]adapter.DNSRule),
 		ruleSetMap:            make(map[string]adapter.RuleSet),
 		needGeoIPDatabase:     hasRule(options.Rules, isGeoIPRule) || hasDNSRule(dnsOptions.Rules, isGeoIPDNSRule),
 		needGeositeDatabase:   hasRule(options.Rules, isGeositeRule) || hasDNSRule(dnsOptions.Rules, isGeositeDNSRule),
@@ -157,14 +161,18 @@ func NewRouter(
 		if err != nil {
 			return nil, E.Cause(err, "parse rule[", i, "]")
 		}
+		uuid := routeRule.UUID()
 		router.rules = append(router.rules, routeRule)
+		router.routeRuleByUUID[uuid] = routeRule
 	}
 	for i, dnsRuleOptions := range dnsOptions.Rules {
 		dnsRule, err := NewDNSRule(router, router.logger, dnsRuleOptions, true)
 		if err != nil {
 			return nil, E.Cause(err, "parse dns rule[", i, "]")
 		}
+		uuid := dnsRule.UUID()
 		router.dnsRules = append(router.dnsRules, dnsRule)
+		router.dnsRuleByUUID[uuid] = dnsRule
 	}
 	for i, ruleSetOptions := range options.RuleSet {
 		if _, exists := router.ruleSetMap[ruleSetOptions.Tag]; exists {
@@ -1084,6 +1092,9 @@ func (r *Router) match0(ctx context.Context, metadata *adapter.InboundContext, d
 		}
 	}
 	for i, rule := range r.rules {
+		if rule.Disabled() {
+			continue
+		}
 		metadata.ResetRuleCache()
 		if rule.Match(metadata) {
 			detour := rule.Outbound()
@@ -1156,6 +1167,24 @@ func (r *Router) DefaultMark() int {
 
 func (r *Router) Rules() []adapter.Rule {
 	return r.rules
+}
+
+func (r *Router) Rule(uuid string) (adapter.Rule, bool) {
+	rule, exists := r.routeRuleByUUID[uuid]
+	return rule, exists
+}
+
+func (r *Router) DNSRules() []adapter.DNSRule {
+	return r.dnsRules
+}
+
+func (r *Router) DNSRule(uuid string) (adapter.DNSRule, bool) {
+	rule, exists := r.dnsRuleByUUID[uuid]
+	return rule, exists
+}
+
+func (r *Router) DefaultDNSServer() string {
+	return r.defaultTransport.Name()
 }
 
 func (r *Router) WIFIState() adapter.WIFIState {
