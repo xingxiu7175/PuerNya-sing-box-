@@ -18,10 +18,10 @@ func NewDomainKeywordItem(keywords []string) *DomainKeywordItem {
 
 func (r *DomainKeywordItem) Match(metadata *adapter.InboundContext) bool {
 	var domainHost string
-	if metadata.Domain != "" {
-		domainHost = metadata.Domain
-	} else {
+	if metadata.Destination.IsFqdn() {
 		domainHost = metadata.Destination.Fqdn
+	} else {
+		domainHost = metadata.Domain
 	}
 	if domainHost == "" {
 		return false
