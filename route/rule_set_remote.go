@@ -262,6 +262,10 @@ func (s *RemoteRuleSet) fetchOnce(ctx context.Context, startContext adapter.Rule
 	return nil
 }
 
+func (s *RemoteRuleSet) ContainsDestinationIPCIDRRule() bool {
+	return s.metadata.ContainsIPCIDRRule
+}
+
 func (s *RemoteRuleSet) Close() error {
 	s.updateTicker.Stop()
 	s.cancel()

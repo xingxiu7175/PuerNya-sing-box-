@@ -74,6 +74,10 @@ func (s *LocalRuleSet) String() string {
 	return strings.Join(F.MapToString(s.rules), " ")
 }
 
+func (s *LocalRuleSet) ContainsDestinationIPCIDRRule() bool {
+	return s.metadata.ContainsIPCIDRRule
+}
+
 func (s *LocalRuleSet) StartContext(ctx context.Context, startContext adapter.RuleSetStartContext) error {
 	return nil
 }

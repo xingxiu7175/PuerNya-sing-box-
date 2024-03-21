@@ -18,13 +18,25 @@ type abstractDefaultRule struct {
 	destinationIPCIDRItems  []RuleItem
 	destinationPortItems    []RuleItem
 	allItems                []RuleItem
-	ruleSetItem             RuleItem
+	ruleSetItems            []RuleItem
 	invert                  bool
+	skipResolve             bool
 	outbound                string
 }
 
 func (r *abstractDefaultRule) Type() string {
 	return C.RuleTypeDefault
+}
+
+func (r *abstractDefaultRule) SkipResolve() bool {
+	return r.skipResolve
+}
+
+func (r *abstractDefaultRule) ContainsDestinationIPCIDRRule() bool {
+	return len(r.destinationIPCIDRItems) > 0 || common.Any(r.ruleSetItems, func(it RuleItem) bool {
+		r, _ := it.(*RuleSetItem)
+		return r.ContainsDestinationIPCIDRRule()
+	})
 }
 
 func (r *abstractDefaultRule) Start() error {
@@ -159,14 +171,25 @@ func (r *abstractDefaultRule) String() string {
 }
 
 type abstractLogicalRule struct {
-	rules    []adapter.HeadlessRule
-	mode     string
-	invert   bool
-	outbound string
+	rules       []adapter.HeadlessRule
+	mode        string
+	invert      bool
+	skipResolve bool
+	outbound    string
 }
 
 func (r *abstractLogicalRule) Type() string {
 	return C.RuleTypeLogical
+}
+
+func (r *abstractLogicalRule) SkipResolve() bool {
+	return r.skipResolve
+}
+
+func (r *abstractLogicalRule) ContainsDestinationIPCIDRRule() bool {
+	return common.Any(r.rules, func(it adapter.HeadlessRule) bool {
+		return it.ContainsDestinationIPCIDRRule()
+	})
 }
 
 func (r *abstractLogicalRule) UpdateGeosite() error {
