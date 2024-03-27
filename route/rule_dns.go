@@ -2,6 +2,7 @@ package route
 
 import (
 	"net/netip"
+	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
@@ -9,18 +10,137 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
+	F "github.com/sagernet/sing/common/format"
 )
 
+type FallbackRule struct {
+	matchAll bool
+	items    []RuleItem
+	invert   bool
+	server   string
+}
+
+func (r *FallbackRule) String() string {
+	result := func() string {
+		if r.matchAll {
+			return "match_all"
+		}
+		result := strings.Join(F.MapToString(r.items), " ")
+		if r.invert {
+			return "!(" + result + ")"
+		}
+		if len(r.items) > 0 {
+			return "[" + result + "]"
+		}
+		return result
+	}()
+	if r.server != "" {
+		result = result + "=>" + r.server
+	}
+	return result
+}
+
+func (r *FallbackRule) Start() error {
+	for _, item := range r.items {
+		err := common.Start(item)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *FallbackRule) Match(metadata *adapter.InboundContext) bool {
+	if r.matchAll {
+		return true
+	}
+	for _, item := range r.items {
+		if item.Match(metadata) {
+			return !r.invert
+		}
+	}
+	return r.invert
+}
+
+type FallbackRules struct {
+	fallbackRules []FallbackRule
+}
+
+func (r *FallbackRules) String() string {
+	if len(r.fallbackRules) == 0 {
+		return ""
+	}
+	if len(r.fallbackRules) == 1 {
+		return "fallback_rule=" + r.fallbackRules[0].String()
+	}
+	result := strings.Join(common.Map(r.fallbackRules, func(it FallbackRule) string {
+		return it.String()
+	}), " ")
+	return "fallback_rules=[" + result + "]"
+}
+
+func (r *FallbackRules) MatchFallback(metadata *adapter.InboundContext, index int) (bool, string, string, int) {
+	fallbackRules := r.fallbackRules
+	if index != -1 {
+		fallbackRules = fallbackRules[index+1:]
+	}
+	for i, rule := range fallbackRules {
+		if rule.Match(metadata) {
+			return true, rule.server, rule.String(), i + index + 1
+		}
+	}
+	return false, "", "", -1
+}
+
+func NewFallbackRules(router adapter.Router, logger log.ContextLogger, fbOptions []option.FallBackRule) ([]FallbackRule, error) {
+	var fallbackRules []FallbackRule
+	for i, options := range fbOptions {
+		if !options.IsValid() {
+			return nil, E.New("fallback_rule[", i, "] missing conditions")
+		}
+		rule := FallbackRule{
+			matchAll: options.MatchAll,
+			invert:   options.Invert,
+			server:   options.Server,
+		}
+		if len(options.IPCIDR) > 0 {
+			item, err := NewIPCIDRItem(false, options.IPCIDR)
+			if err != nil {
+				return nil, E.Cause(err, "ipcidr")
+			}
+			rule.items = append(rule.items, item)
+		}
+		if options.IPIsPrivate {
+			item := NewIPIsPrivateItem(false)
+			rule.items = append(rule.items, item)
+		}
+		if len(options.GeoIP) > 0 {
+			item := NewGeoIPItem(router, logger, false, options.GeoIP)
+			rule.items = append(rule.items, item)
+		}
+		if len(options.RuleSet) > 0 {
+			item := NewRuleSetItem(router, options.RuleSet, false)
+			rule.items = append(rule.items, item)
+		}
+		fallbackRules = append(fallbackRules, rule)
+	}
+	return fallbackRules, nil
+}
+
 func NewDNSRule(router adapter.Router, logger log.ContextLogger, options option.DNSRule, checkServer bool) (adapter.DNSRule, error) {
+	fallbackRules, err := NewFallbackRules(router, logger, options.FallBackRules)
+	if err != nil {
+		return nil, err
+	}
 	switch options.Type {
 	case "", C.RuleTypeDefault:
-		if !options.DefaultOptions.IsValid() {
+		if len(options.FallBackRules) == 0 && !options.DefaultOptions.IsValid() {
 			return nil, E.New("missing conditions")
 		}
 		if options.DefaultOptions.Server == "" && checkServer {
 			return nil, E.New("missing server field")
 		}
-		return NewDefaultDNSRule(router, logger, options.DefaultOptions)
+		return NewDefaultDNSRule(router, logger, options.DefaultOptions, fallbackRules)
 	case C.RuleTypeLogical:
 		if !options.LogicalOptions.IsValid() {
 			return nil, E.New("missing conditions")
@@ -28,7 +148,7 @@ func NewDNSRule(router adapter.Router, logger log.ContextLogger, options option.
 		if options.LogicalOptions.Server == "" && checkServer {
 			return nil, E.New("missing server field")
 		}
-		return NewLogicalDNSRule(router, logger, options.LogicalOptions)
+		return NewLogicalDNSRule(router, logger, options.LogicalOptions, fallbackRules)
 	default:
 		return nil, E.New("unknown rule type: ", options.Type)
 	}
@@ -38,16 +158,20 @@ var _ adapter.DNSRule = (*DefaultDNSRule)(nil)
 
 type DefaultDNSRule struct {
 	abstractDefaultRule
+	FallbackRules
 	disableCache bool
 	rewriteTTL   *uint32
 	clientSubnet *netip.Addr
 }
 
-func NewDefaultDNSRule(router adapter.Router, logger log.ContextLogger, options option.DefaultDNSRule) (*DefaultDNSRule, error) {
+func NewDefaultDNSRule(router adapter.Router, logger log.ContextLogger, options option.DefaultDNSRule, fallbackRules []FallbackRule) (*DefaultDNSRule, error) {
 	rule := &DefaultDNSRule{
 		abstractDefaultRule: abstractDefaultRule{
 			invert:   options.Invert,
 			outbound: options.Server,
+		},
+		FallbackRules: FallbackRules{
+			fallbackRules: fallbackRules,
 		},
 		disableCache: options.DisableCache,
 		rewriteTTL:   options.RewriteTTL,
@@ -238,6 +362,14 @@ func (r *DefaultDNSRule) ClientSubnet() *netip.Addr {
 	return r.clientSubnet
 }
 
+func (r *DefaultDNSRule) String() string {
+	result := r.abstractDefaultRule.String()
+	if len(r.fallbackRules) > 0 {
+		result = result + " " + r.FallbackRules.String()
+	}
+	return result
+}
+
 func (r *DefaultDNSRule) WithAddressLimit() bool {
 	if len(r.destinationIPCIDRItems) > 0 {
 		return true
@@ -270,17 +402,21 @@ var _ adapter.DNSRule = (*LogicalDNSRule)(nil)
 
 type LogicalDNSRule struct {
 	abstractLogicalRule
+	FallbackRules
 	disableCache bool
 	rewriteTTL   *uint32
 	clientSubnet *netip.Addr
 }
 
-func NewLogicalDNSRule(router adapter.Router, logger log.ContextLogger, options option.LogicalDNSRule) (*LogicalDNSRule, error) {
+func NewLogicalDNSRule(router adapter.Router, logger log.ContextLogger, options option.LogicalDNSRule, fallbackRules []FallbackRule) (*LogicalDNSRule, error) {
 	r := &LogicalDNSRule{
 		abstractLogicalRule: abstractLogicalRule{
 			rules:    make([]adapter.HeadlessRule, len(options.Rules)),
 			invert:   options.Invert,
 			outbound: options.Server,
+		},
+		FallbackRules: FallbackRules{
+			fallbackRules: fallbackRules,
 		},
 		disableCache: options.DisableCache,
 		rewriteTTL:   options.RewriteTTL,
@@ -313,6 +449,14 @@ func (r *LogicalDNSRule) RewriteTTL() *uint32 {
 
 func (r *LogicalDNSRule) ClientSubnet() *netip.Addr {
 	return r.clientSubnet
+}
+
+func (r *LogicalDNSRule) String() string {
+	result := r.abstractLogicalRule.String()
+	if len(r.fallbackRules) > 0 {
+		result = result + " " + r.FallbackRules.String()
+	}
+	return result
 }
 
 func (r *LogicalDNSRule) WithAddressLimit() bool {

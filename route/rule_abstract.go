@@ -151,6 +151,9 @@ func (r *abstractDefaultRule) Outbound() string {
 }
 
 func (r *abstractDefaultRule) String() string {
+	if len(r.allItems) == 0 {
+		return "match_all"
+	}
 	if !r.invert {
 		return strings.Join(F.MapToString(r.allItems), " ")
 	} else {
