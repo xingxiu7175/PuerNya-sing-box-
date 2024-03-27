@@ -23,37 +23,40 @@ type (
 	PacketSniffer = func(ctx context.Context, packet []byte, sniffdata chan SniffData)
 )
 
+func closeSniffChanSafely(sniffdatas chan SniffData, start int, total int) {
+	for i := start; i < total; i++ {
+		<-sniffdatas
+	}
+	close(sniffdatas)
+}
+
 func PeekStream(ctx context.Context, conn net.Conn, buffer *buf.Buffer, timeout time.Duration, sniffers ...StreamSniffer) (*adapter.InboundContext, error) {
 	if timeout == 0 {
 		timeout = C.ReadPayloadTimeout
 	}
 	deadline := time.Now().Add(timeout)
 	var errors []error
-	for i := 0; i < 3; i++ {
-		err := conn.SetReadDeadline(deadline)
-		if err != nil {
-			return nil, E.Cause(err, "set read deadline")
+	err := conn.SetReadDeadline(deadline)
+	if err != nil {
+		return nil, E.Cause(err, "set read deadline")
+	}
+	_, err = buffer.ReadOnceFrom(conn)
+	err = E.Errors(err, conn.SetReadDeadline(time.Time{}))
+	if err != nil {
+		return nil, E.Cause(err, "read payload")
+	}
+	sniffdatas := make(chan SniffData, len(sniffers))
+	for _, sniffer := range sniffers {
+		go sniffer(ctx, bytes.NewReader(buffer.Bytes()), sniffdatas)
+	}
+	for i := 0; i < len(sniffers); i++ {
+		data := <-sniffdatas
+		if data.metadata != nil {
+			go closeSniffChanSafely(sniffdatas, i+1, len(sniffers))
+			return data.metadata, nil
 		}
-		_, err = buffer.ReadOnceFrom(conn)
-		err = E.Errors(err, conn.SetReadDeadline(time.Time{}))
-		if err != nil {
-			if i > 0 {
-				break
-			}
-			return nil, E.Cause(err, "read payload")
-		}
-		sniffdatas := make(chan SniffData, len(sniffers))
-		for _, sniffer := range sniffers {
-			go sniffer(ctx, bytes.NewReader(buffer.Bytes()), sniffdatas)
-		}
-		for i := 0; i < len(sniffers); i++ {
-			data := <-sniffdatas
-			if data.metadata != nil {
-				return data.metadata, nil
-			}
-			if data.err != nil {
-				errors = append(errors, data.err)
-			}
+		if data.err != nil {
+			errors = append(errors, data.err)
 		}
 	}
 	return nil, E.Errors(errors...)
@@ -68,6 +71,7 @@ func PeekPacket(ctx context.Context, packet []byte, sniffers ...PacketSniffer) (
 	for i := 0; i < len(sniffers); i++ {
 		data := <-sniffdatas
 		if data.metadata != nil {
+			go closeSniffChanSafely(sniffdatas, i+1, len(sniffers))
 			return data.metadata, nil
 		}
 		if data.err != nil {
