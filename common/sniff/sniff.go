@@ -30,39 +30,34 @@ func PeekStream(ctx context.Context, conn net.Conn, buffer *buf.Buffer, timeout 
 	}
 	deadline := time.Now().Add(timeout)
 	var errors []error
-	for i := 0; i < 3; i++ {
-		err := conn.SetReadDeadline(deadline)
-		if err != nil {
-			return nil, E.Cause(err, "set read deadline")
+	err := conn.SetReadDeadline(deadline)
+	if err != nil {
+		return nil, E.Cause(err, "set read deadline")
+	}
+	_, err = buffer.ReadOnceFrom(conn)
+	err = E.Errors(err, conn.SetReadDeadline(time.Time{}))
+	if err != nil {
+		return nil, E.Cause(err, "read payload")
+	}
+	sniffdatas := make(chan SniffData, len(sniffers))
+	var wg sync.WaitGroup
+	for _, sniffer := range sniffers {
+		wg.Add(1)
+		go sniffer(ctx, bytes.NewReader(buffer.Bytes()), sniffdatas, &wg)
+	}
+	defer func(wg *sync.WaitGroup, sniffdatas chan SniffData) {
+		go func(wg *sync.WaitGroup, sniffdatas chan SniffData) {
+			wg.Wait()
+			close(sniffdatas)
+		}(wg, sniffdatas)
+	}(&wg, sniffdatas)
+	for i := 0; i < len(sniffers); i++ {
+		data := <-sniffdatas
+		if data.metadata != nil {
+			return data.metadata, nil
 		}
-		_, err = buffer.ReadOnceFrom(conn)
-		err = E.Errors(err, conn.SetReadDeadline(time.Time{}))
-		if err != nil {
-			if i > 0 {
-				break
-			}
-			return nil, E.Cause(err, "read payload")
-		}
-		sniffdatas := make(chan SniffData, len(sniffers))
-		var wg sync.WaitGroup
-		for _, sniffer := range sniffers {
-			wg.Add(1)
-			go sniffer(ctx, bytes.NewReader(buffer.Bytes()), sniffdatas, &wg)
-		}
-		defer func(wg *sync.WaitGroup, sniffdatas chan SniffData) {
-			go func(wg *sync.WaitGroup, sniffdatas chan SniffData) {
-				wg.Wait()
-				close(sniffdatas)
-			}(wg, sniffdatas)
-		}(&wg, sniffdatas)
-		for i := 0; i < len(sniffers); i++ {
-			data := <-sniffdatas
-			if data.metadata != nil {
-				return data.metadata, nil
-			}
-			if data.err != nil {
-				errors = append(errors, data.err)
-			}
+		if data.err != nil {
+			errors = append(errors, data.err)
 		}
 	}
 	return nil, E.Errors(errors...)
