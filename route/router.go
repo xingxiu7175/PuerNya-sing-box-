@@ -826,7 +826,7 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 		sniffMetadata, err := sniff.PeekStream(ctx, conn, buffer, time.Duration(metadata.InboundOptions.SniffTimeout), sniff.StreamDomainNameQuery, sniff.TLSClientHello, sniff.HTTPHost)
 		if sniffMetadata != nil {
 			metadata.Protocol = sniffMetadata.Protocol
-			metadata.Domain = sniffMetadata.Domain
+			metadata.SniffDomain = sniffMetadata.Domain
 			if sniffMetadata.Domain != "" {
 				r.logger.DebugContext(ctx, "sniffed protocol: ", sniffMetadata.Protocol, ", domain: ", sniffMetadata.Domain)
 			} else {
@@ -955,7 +955,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			sniffMetadata, _ := sniff.PeekPacket(ctx, buffer.Bytes(), sniff.DomainNameQuery, sniff.QUICClientHello, sniff.STUNMessage)
 			if sniffMetadata != nil {
 				metadata.Protocol = sniffMetadata.Protocol
-				metadata.Domain = sniffMetadata.Domain
+				metadata.SniffDomain = sniffMetadata.Domain
 				if sniffMetadata.Domain != "" {
 					r.logger.DebugContext(ctx, "sniffed packet protocol: ", sniffMetadata.Protocol, ", domain: ", sniffMetadata.Domain)
 				} else {
