@@ -36,6 +36,7 @@ type InboundContext struct {
 	User        string
 	Outbound    string
 	SniffDomain string
+	DNSMode     string
 
 	// cache
 

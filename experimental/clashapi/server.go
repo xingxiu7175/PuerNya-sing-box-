@@ -279,7 +279,7 @@ func castMetadata(metadata adapter.InboundContext) trafficontrol.Metadata {
 		DstPort:     F.ToString(metadata.Destination.Port),
 		Host:        domain,
 		SniffHost:   metadata.SniffDomain,
-		DNSMode:     "normal",
+		DNSMode:     metadata.DNSMode,
 		ProcessPath: processPath,
 	}
 }

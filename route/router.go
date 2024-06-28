@@ -812,6 +812,7 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 			Fqdn: domain,
 			Port: metadata.Destination.Port,
 		}
+		metadata.DNSMode = C.DNSModeFakeIP
 		metadata.FakeIP = true
 		r.logger.DebugContext(ctx, "found fakeip domain: ", domain)
 		r.logger.DebugContext(ctx, "connection destination is overridden as ", domain, ":", metadata.Destination.Port)
@@ -853,6 +854,7 @@ func (r *Router) RouteConnection(ctx context.Context, conn net.Conn, metadata ad
 		domain, loaded := r.dnsReverseMapping.Query(metadata.Destination.Addr)
 		if loaded {
 			metadata.Domain = domain
+			metadata.DNSMode = C.DNSModeRealIP
 			r.logger.DebugContext(ctx, "found reserve mapped domain: ", metadata.Domain)
 		}
 	}
@@ -931,6 +933,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 			Fqdn: domain,
 			Port: metadata.Destination.Port,
 		}
+		metadata.DNSMode = C.DNSModeFakeIP
 		metadata.FakeIP = true
 		r.logger.DebugContext(ctx, "found fakeip domain: ", domain)
 		r.logger.DebugContext(ctx, "packet destination is overridden as ", domain, ":", metadata.Destination.Port)
@@ -976,6 +979,7 @@ func (r *Router) RoutePacketConnection(ctx context.Context, conn N.PacketConn, m
 		domain, loaded := r.dnsReverseMapping.Query(metadata.Destination.Addr)
 		if loaded {
 			metadata.Domain = domain
+			metadata.DNSMode = C.DNSModeRealIP
 			r.logger.DebugContext(ctx, "found reserve mapped domain: ", metadata.Domain)
 		}
 	}
