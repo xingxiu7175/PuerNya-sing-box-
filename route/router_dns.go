@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-dns"
 	"github.com/sagernet/sing/common/cache"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -141,6 +142,129 @@ func (r *Router) matchFallbackRules(ctx context.Context, addrs []netip.Addr, rul
 	return ctx, nil, dns.DomainStrategyAsIS, nil, false
 }
 
+func createUpdateCacheContext(ctx context.Context) context.Context {
+	result := log.ContextWithNewID(context.Background())
+	return adapter.WithContext(result, adapter.ContextFrom(ctx))
+}
+
+func (r *Router) exchangeFunc(ctx context.Context, message *mDNS.Msg, isCacheUpdate bool) (*mDNS.Msg, bool, error) {
+	if isCacheUpdate && len(message.Question) > 0 {
+		r.dnsLogger.DebugContext(ctx, "update ", formatQuestion(message.Question[0].String()), " exchange cache")
+	}
+	var (
+		response  *mDNS.Msg
+		transport dns.Transport
+		metadata  *adapter.InboundContext
+		isFakeIP  bool
+		err       error
+	)
+	ctx, metadata = adapter.AppendContext(ctx)
+	if len(message.Question) > 0 {
+		metadata.QueryType = message.Question[0].Qtype
+		switch metadata.QueryType {
+		case mDNS.TypeA:
+			metadata.IPVersion = 4
+		case mDNS.TypeAAAA:
+			metadata.IPVersion = 6
+		}
+		metadata.Domain = fqdnToDomain(message.Question[0].Name)
+	}
+	var (
+		strategy  dns.DomainStrategy
+		rule      adapter.DNSRule
+		ruleIndex int
+	)
+	ruleIndex = -1
+	for {
+		var (
+			dnsCtx       context.Context
+			cancel       context.CancelFunc
+			addressLimit bool
+		)
+
+		dnsCtx, transport, strategy, rule, ruleIndex, isFakeIP = r.matchDNS(ctx, true, ruleIndex)
+		isisAddrReq := isAddressQuery(message)
+		dnsCtx, cancel = context.WithTimeout(dnsCtx, C.DNSTimeout)
+		if rule != nil && rule.WithAddressLimit() && isisAddrReq {
+			addressLimit = true
+			response, err = r.dnsClient.ExchangeWithResponseCheck(dnsCtx, transport, message, strategy, isCacheUpdate, func(response *mDNS.Msg) bool {
+				metadata.DestinationAddresses, _ = dns.MessageToAddresses(response)
+				return rule.MatchAddressLimit(metadata)
+			})
+		} else {
+			addressLimit = false
+			response, err = r.dnsClient.Exchange(dnsCtx, transport, message, strategy, isCacheUpdate)
+		}
+		cancel()
+		var rejected bool
+		if err != nil {
+			if errors.Is(err, dns.ErrResponseRejectedCached) {
+				rejected = true
+					r.dnsLogger.DebugContext(ctx, E.Cause(err, "response rejected for ", formatQuestion(message.Question[0].String())), " (cached)")
+			} else if errors.Is(err, dns.ErrResponseRejected) {
+				rejected = true
+					r.dnsLogger.DebugContext(ctx, E.Cause(err, "response rejected for ", formatQuestion(message.Question[0].String())))
+			} else if len(message.Question) > 0 {
+					r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for ", formatQuestion(message.Question[0].String())))
+			} else {
+				r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for <empty query>"))
+			}
+		}
+		if rule == nil || !isisAddrReq || isFakeIP {
+			break
+		}
+		if _, isRcode := transport.(*dns.RCodeTransport); isRcode {
+			break
+		}
+		if addressLimit && rejected {
+			continue
+		}
+		if err != nil || response == nil {
+			break
+		}
+		if response.Rcode != mDNS.RcodeSuccess {
+			if rule.AllowFallthrough() {
+				continue
+			}
+			break
+		}
+		addrs, _ := dns.MessageToAddresses(response)
+		fbRules := rule.FallbackRules()
+		if len(fbRules) == 0 {
+			break
+		}
+		var fallbackRule adapter.FallbackRule
+		dnsCtx, transport, strategy, fallbackRule, isFakeIP = r.matchFallbackRules(ctx, addrs, fbRules, true)
+		if fallbackRule == nil {
+			break
+		}
+		if transport == nil {
+			continue
+		}
+		dnsCtx, cancel = context.WithTimeout(dnsCtx, C.DNSTimeout)
+		response, err = r.dnsClient.Exchange(dnsCtx, transport, message, strategy, isCacheUpdate)
+		cancel()
+		if isFakeIP {
+			break
+		}
+		if _, isRcode := transport.(*dns.RCodeTransport); isRcode {
+			break
+		}
+		if err == nil {
+			break
+		} else if len(message.Question) > 0 {
+			r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for ", formatQuestion(message.Question[0].String())))
+		} else {
+			r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for <empty query>"))
+		}
+		break
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return response, isFakeIP, nil
+}
+
 func (r *Router) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	var rawFqdn string
 	if len(message.Question) > 0 {
@@ -148,12 +272,11 @@ func (r *Router) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, er
 		r.dnsLogger.DebugContext(ctx, "exchange ", formatQuestion(message.Question[0].String()))
 	}
 	var (
-		response  *mDNS.Msg
-		records   []mDNS.RR
-		cached    bool
-		isFakeIP  bool
-		transport dns.Transport
-		err       error
+		response *mDNS.Msg
+		records  []mDNS.RR
+		cached   bool
+		isFakeIP bool
+		err      error
 	)
 	if response, records = r.dnsClient.SearchCNAMEHosts(ctx, message); response != nil {
 		return response, nil
@@ -193,128 +316,23 @@ func (r *Router) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, er
 	if response = r.dnsClient.SearchIPHosts(ctx, message, r.defaultDomainStrategy); response != nil {
 		return response, nil
 	}
-	if response, cached = r.dnsClient.ExchangeCache(ctx, message); cached {
+	var needUpdate bool
+	if response, cached, needUpdate = r.dnsClient.ExchangeCache(ctx, message); cached {
+		if needUpdate {
+			go r.exchangeFunc(createUpdateCacheContext(ctx), message, true)
+		}
 		return response, nil
 	}
-	var metadata *adapter.InboundContext
-	ctx, metadata = adapter.AppendContext(ctx)
-	if len(message.Question) > 0 {
-		metadata.QueryType = message.Question[0].Qtype
-		switch metadata.QueryType {
-		case mDNS.TypeA:
-			metadata.IPVersion = 4
-		case mDNS.TypeAAAA:
-			metadata.IPVersion = 6
-		}
-		metadata.Domain = fqdnToDomain(message.Question[0].Name)
-	}
-	var (
-		strategy  dns.DomainStrategy
-		rule      adapter.DNSRule
-		ruleIndex int
-	)
-	ruleIndex = -1
-	for {
-		var (
-			dnsCtx       context.Context
-			cancel       context.CancelFunc
-			addressLimit bool
-		)
-
-		dnsCtx, transport, strategy, rule, ruleIndex, isFakeIP = r.matchDNS(ctx, true, ruleIndex)
-		isisAddrReq := isAddressQuery(message)
-		dnsCtx, cancel = context.WithTimeout(dnsCtx, C.DNSTimeout)
-		if rule != nil && rule.WithAddressLimit() && isisAddrReq {
-			addressLimit = true
-			response, err = r.dnsClient.ExchangeWithResponseCheck(dnsCtx, transport, message, strategy, func(response *mDNS.Msg) bool {
-				metadata.DestinationAddresses, _ = dns.MessageToAddresses(response)
-				return rule.MatchAddressLimit(metadata)
-			})
-		} else {
-			addressLimit = false
-			response, err = r.dnsClient.Exchange(dnsCtx, transport, message, strategy)
-		}
-		cancel()
-		var rejected bool
-		if err != nil {
-			if errors.Is(err, dns.ErrResponseRejectedCached) {
-				rejected = true
-				r.dnsLogger.DebugContext(ctx, E.Cause(err, "response rejected for ", formatQuestion(message.Question[0].String())), " (cached)")
-			} else if errors.Is(err, dns.ErrResponseRejected) {
-				rejected = true
-				r.dnsLogger.DebugContext(ctx, E.Cause(err, "response rejected for ", formatQuestion(message.Question[0].String())))
-			} else if len(message.Question) > 0 {
-				r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for ", formatQuestion(message.Question[0].String())))
-			} else {
-				r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for <empty query>"))
-			}
-		}
-		if rule == nil || !isisAddrReq || isFakeIP {
-			break
-		}
-		if _, isRcode := transport.(*dns.RCodeTransport); isRcode {
-			break
-		}
-		if addressLimit && rejected {
-			continue
-		}
-		if err != nil || response == nil {
-			break
-		}
-		if response.Rcode != mDNS.RcodeSuccess {
-			if rule.AllowFallthrough() {
-				continue
-			}
-			break
-		}
-		addrs, _ := dns.MessageToAddresses(response)
-		fbRules := rule.FallbackRules()
-		if len(fbRules) == 0 {
-			break
-		}
-		var fallbackRule adapter.FallbackRule
-		dnsCtx, transport, strategy, fallbackRule, isFakeIP = r.matchFallbackRules(ctx, addrs, fbRules, true)
-		if fallbackRule == nil {
-			break
-		}
-		if transport == nil {
-			continue
-		}
-		dnsCtx, cancel = context.WithTimeout(dnsCtx, C.DNSTimeout)
-		response, err = r.dnsClient.Exchange(dnsCtx, transport, message, strategy)
-		cancel()
-		if isFakeIP {
-			break
-		}
-		if _, isRcode := transport.(*dns.RCodeTransport); isRcode {
-			break
-		}
-		if err == nil {
-			break
-		}
-		if len(message.Question) > 0 {
-			r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for ", formatQuestion(message.Question[0].String())))
-		} else {
-			r.dnsLogger.ErrorContext(ctx, E.Cause(err, "exchange failed for <empty query>"))
-		}
-		break
-	}
-	if err != nil {
-		return nil, err
-	}
-	return response, nil
+	response, isFakeIP, err = r.exchangeFunc(ctx, message, false)
+	return response, err
 }
 
-func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainStrategy) ([]netip.Addr, error) {
-	var (
-		responseAddrs []netip.Addr
-		cached        bool
-		err           error
-	)
-	if responseAddrs, cached = r.dnsClient.LookupCache(ctx, domain, strategy); cached {
-		return responseAddrs, nil
+func (r *Router) lookupFunc(ctx context.Context, domain string, strategy dns.DomainStrategy, isCacheUpdate bool) ([]netip.Addr, error) {
+	if !isCacheUpdate {
+		r.dnsLogger.DebugContext(ctx, "lookup domain ", domain)
+	} else {
+		r.dnsLogger.DebugContext(ctx, "update domain ", domain, " lookup cache")
 	}
-	r.dnsLogger.DebugContext(ctx, "lookup domain ", domain)
 	ctx, metadata := adapter.AppendContext(ctx)
 	metadata.Domain = domain
 	var (
@@ -322,6 +340,8 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 		transportStrategy dns.DomainStrategy
 		rule              adapter.DNSRule
 		ruleIndex         int
+		responseAddrs     []netip.Addr
+		err               error
 	)
 	ruleIndex = -1
 	for {
@@ -340,13 +360,13 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 		}
 		if rule != nil && rule.WithAddressLimit() {
 			addressLimit = true
-			responseAddrs, err = r.dnsClient.LookupWithResponseCheck(dnsCtx, transport, domain, strategy, func(responseAddrs []netip.Addr) bool {
+			responseAddrs, err = r.dnsClient.LookupWithResponseCheck(dnsCtx, transport, domain, strategy, isCacheUpdate, func(responseAddrs []netip.Addr) bool {
 				metadata.DestinationAddresses = responseAddrs
 				return rule.MatchAddressLimit(metadata)
 			})
 		} else {
 			addressLimit = false
-			responseAddrs, err = r.dnsClient.Lookup(dnsCtx, transport, domain, strategy)
+			responseAddrs, err = r.dnsClient.Lookup(dnsCtx, transport, domain, strategy, isCacheUpdate)
 		}
 		cancel()
 		lookupErr = err
@@ -354,15 +374,15 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 		if err != nil {
 			if errors.Is(err, dns.ErrResponseRejectedCached) {
 				rejected = true
-				r.dnsLogger.DebugContext(ctx, "response rejected for ", domain, " (cached)")
+					r.dnsLogger.DebugContext(ctx, "response rejected for ", domain, " (cached)")
 			} else if errors.Is(err, dns.ErrResponseRejected) {
 				rejected = true
-				r.dnsLogger.DebugContext(ctx, "response rejected for ", domain)
+					r.dnsLogger.DebugContext(ctx, "response rejected for ", domain)
 			} else {
 				r.dnsLogger.ErrorContext(ctx, E.Cause(err, "lookup failed for ", domain))
 			}
 		} else if len(responseAddrs) == 0 {
-			r.dnsLogger.ErrorContext(ctx, "lookup failed for ", domain, ": empty result")
+				r.dnsLogger.ErrorContext(ctx, "lookup failed for ", domain, ": empty result")
 			err = dns.RCodeNameError
 		} else {
 			r.dnsLogger.InfoContext(ctx, "lookup succeed for ", domain, ": ", strings.Join(F.MapToString(responseAddrs), " "))
@@ -395,12 +415,12 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 			continue
 		}
 		dnsCtx, cancel = context.WithTimeout(dnsCtx, C.DNSTimeout)
-		responseAddrs, err = r.dnsClient.Lookup(dnsCtx, transport, domain, strategy)
+		responseAddrs, err = r.dnsClient.Lookup(dnsCtx, transport, domain, strategy, isCacheUpdate)
 		cancel()
 		if err != nil {
-			r.dnsLogger.ErrorContext(ctx, E.Cause(err, "lookup failed for ", domain))
+				r.dnsLogger.ErrorContext(ctx, E.Cause(err, "lookup failed for ", domain))
 		} else if len(responseAddrs) == 0 {
-			r.dnsLogger.ErrorContext(ctx, "lookup failed for ", domain, ": empty result")
+				r.dnsLogger.ErrorContext(ctx, "lookup failed for ", domain, ": empty result")
 			err = dns.RCodeNameError
 		} else {
 			r.dnsLogger.InfoContext(ctx, "lookup succeed for ", domain, ": ", strings.Join(F.MapToString(responseAddrs), " "))
@@ -411,6 +431,17 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 		r.dnsLogger.InfoContext(ctx, "finally lookup succeed for ", domain, ": ", strings.Join(F.MapToString(responseAddrs), " "))
 	}
 	return responseAddrs, err
+
+}
+
+func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainStrategy) ([]netip.Addr, error) {
+	if responseAddrs, cached, needUpdate := r.dnsClient.LookupCache(ctx, domain, strategy); cached {
+		if needUpdate {
+			go r.lookupFunc(createUpdateCacheContext(ctx), domain, strategy, true)
+		}
+		return responseAddrs, nil
+	}
+	return r.lookupFunc(ctx, domain, strategy, false)
 }
 
 func (r *Router) Lookup(ctx context.Context, domain string, strategy dns.DomainStrategy) ([]netip.Addr, error) {
