@@ -124,6 +124,7 @@ icon: material/new-box
         ],
         "fallback_rules": [],
         "server": "local",
+        "allow_fallthrough": false,
         "disable_cache": false,
         "client_subnet": "127.0.0.1/24"
       },
@@ -133,6 +134,7 @@ icon: material/new-box
         "rules": [],
         "fallback_rules": [],
         "server": "local",
+        "allow_fallthrough": false,
         "disable_cache": false,
         "client_subnet": "127.0.0.1/24"
       }
@@ -336,6 +338,10 @@ DNS 查询类型。值可以为整数或者类型名称字符串。
 ==必填==
 
 目标 DNS 服务器的标签。
+
+#### allow_fallthrough
+
+当 DNS 请求类型为 A/AAAA 且 DNS 应答中无 IP 记录或内置 IP 查询且无结果时，继续向下匹配。
 
 #### disable_cache
 

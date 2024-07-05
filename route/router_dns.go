@@ -255,12 +255,12 @@ func (r *Router) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, er
 			break
 		}
 		if response.Rcode != mDNS.RcodeSuccess {
+			if rule.AllowFallthrough() {
+				continue
+			}
 			break
 		}
 		addrs, _ := dns.MessageToAddresses(response)
-		if len(addrs) == 0 {
-			break
-		}
 		fbRules := rule.FallbackRules()
 		if len(fbRules) == 0 {
 			break
@@ -322,6 +322,7 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 			dnsCtx       context.Context
 			cancel       context.CancelFunc
 			addressLimit bool
+			lookupErr    error
 		)
 		metadata.ResetRuleCache()
 		metadata.DestinationAddresses = nil
@@ -341,6 +342,7 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 			responseAddrs, err = r.dnsClient.Lookup(dnsCtx, transport, domain, strategy)
 		}
 		cancel()
+		lookupErr = err
 		var rejected bool
 		if err != nil {
 			if errors.Is(err, dns.ErrResponseRejectedCached) {
@@ -361,7 +363,13 @@ func (r *Router) lookup(ctx context.Context, domain string, strategy dns.DomainS
 		if rule == nil {
 			break
 		}
+		if _, isRcode := transport.(*dns.RCodeTransport); isRcode {
+			break
+		}
 		if addressLimit && rejected {
+			continue
+		}
+		if lookupErr == nil && len(responseAddrs) == 0 && rule.AllowFallthrough() {
 			continue
 		}
 		if err != nil {
